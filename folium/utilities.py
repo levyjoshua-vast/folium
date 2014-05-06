@@ -55,7 +55,8 @@ def color_brewer(color_code):
                'YlOrBr': ['#FFFFD4', '#FEE391', '#FEC44F', '#FE9929', '#EC7014',
                           '#CC4C02', '#8C2D04'],
                'YlOrRd': ['#FFFFB2', '#FED976', '#FEB24C', '#FD8D3C', '#FC4E2A',
-                          '#E31A1C', '#B10026']}
+                          '#E31A1C', '#B10026'],
+               'Accent': '#7FC97F #BEAED4 #FDC086 #FFFF99 #386CB0 #F0027F'.split(' ')}
 
     return schemes.get(color_code, None)
 
