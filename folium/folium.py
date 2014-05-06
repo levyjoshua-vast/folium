@@ -15,7 +15,25 @@ import functools
 from jinja2 import Environment, PackageLoader
 from pkg_resources import resource_string, resource_filename
 import utilities
+from uuid import uuid4
 
+
+ENV = Environment(loader=PackageLoader('folium', 'templates'))
+
+
+def initialize_notebook():
+    """Initialize the IPython notebook display elements"""
+    try:
+        from IPython.core.display import display, HTML
+    except ImportError:
+        print("IPython Notebook could not be loaded.")
+
+    lib_css = ENV.get_template('ipynb_init_css.html')
+    lib_js = ENV.get_template('ipynb_init_js.html')
+    leaflet_dvf = ENV.get_template('leaflet-dvf.markers.min.js')
+
+    display(HTML(lib_css.render()))
+    display(HTML(lib_js.render({'leaflet_dvf': leaflet_dvf.render()})))
 
 def iter_obj(type):
     '''Decorator to keep count of different map object types in self.mk_cnt'''
@@ -90,8 +108,11 @@ class Map(object):
 
         '''
 
-        #Init Map type
+        #Inits
+        self.map_path = None
+        self.render_iframe = False
         self.map_type = 'base'
+        self.map_id = '_'.join(['folium', uuid4().hex])
 
         #Mark counter, JSON, Plugins
         self.mark_cnt = {}
@@ -105,15 +126,18 @@ class Map(object):
         self.location = location
 
         #Map Size Parameters
+        self.width = width
+        self.height = height
         self.map_size = {'width': width, 'height': height}
         self._size = ('style="width: {0}px; height: {1}px"'
                       .format(width, height))
 
         #Templates
-        self.env = Environment(loader=PackageLoader('folium', 'templates'))
+        self.env = ENV
         self.template_vars = {'lat': location[0], 'lon': location[1],
                               'size': self._size, 'max_zoom': max_zoom,
-                              'zoom_level': zoom_start}
+                              'zoom_level': zoom_start,
+                              'map_id': self.map_id}
 
         #Tiles
         self.tiles = ''.join(tiles.lower().strip().split())
@@ -187,6 +211,48 @@ class Map(object):
         self.template_vars.setdefault('markers', []).append((marker,
                                                              popup_out,
                                                              add_mark))
+
+    @iter_obj('line')
+    def line(self, locations,
+             line_color=None, line_opacity=None, line_weight=None):
+        '''Add a line to the map with optional styles.
+
+        Parameters
+        ----------
+        locations: list of points (latitude, longitude)
+            Latitude and Longitude of line (Northing, Easting)
+        line_color: string, default Leaflet's default ('#03f')
+        line_opacity: float, default Leaflet's default (0.5)
+        line_weight: float, default Leaflet's default (5)
+
+        Note: If the optional styles are omitted, they will not be included
+        in the HTML output and will obtain the Leaflet defaults listed above.
+
+        Example
+        -------
+        >>>map.line(locations=[(45.5, -122.3), (42.3, -71.0)])
+        >>>map.line(locations=[(45.5, -122.3), (42.3, -71.0)],
+                    line_color='red', line_opacity=1.0)
+
+        '''
+        count = self.mark_cnt['line']
+
+        line_temp = self.env.get_template('polyline.js')
+
+        polyline_opts = {'color': line_color,
+                'weight': line_weight,
+                'opacity': line_opacity}
+
+        varname = 'line_{}'.format(count)
+        line_rendered = line_temp.render({'line': varname,
+                                          'locations': locations,
+                                          'options': polyline_opts})
+
+        add_line = 'map.addLayer({});'.format(varname)
+
+        self.template_vars.setdefault('lines', []).append((line_rendered,
+                                                           add_line))
+
 
     @iter_obj('circle')
     def circle_marker(self, location=None, radius=500, popup='Pop Text',
@@ -399,8 +465,8 @@ class Map(object):
                                           'vega_id': vega_id})
 
     @iter_obj('geojson')
-    def geo_json(self, geo_path=None, data_out='data.json', data=None,
-                 columns=None, key_on=None, threshold_scale=None,
+    def geo_json(self, geo_path=None, geo_str=None, data_out='data.json',
+                 data=None, columns=None, key_on=None, threshold_scale=None,
                  fill_color='blue', fill_opacity=0.6, line_color='black',
                  line_weight=1, line_opacity=1, legend_name=None,
                  topojson=None, reset=False):
@@ -433,6 +499,8 @@ class Map(object):
         ----------
         geo_path: string, default None
             URL or File path to your GeoJSON data
+        geo_str: string, default None
+            String of GeoJSON, alternative to geo_path
         data_out: string, default 'data.json'
             Path to write Pandas DataFrame/Series to JSON if binding data
         data: Pandas DataFrame or Series, default None
@@ -506,7 +574,13 @@ class Map(object):
         self.map_type = 'geojson'
 
         #Get JSON map layer template pieces, convert TopoJSON if necessary
-        geo_path = ".defer(d3.json, '{0}')".format(geo_path)
+        # geo_str is really a hack
+        if geo_path:
+            geo_path = ".defer(d3.json, '{0}')".format(geo_path)
+        elif geo_str:
+            geo_path = (".defer(function(callback)"
+                        "{{callback(null, JSON.parse('{}'))}})").format(geo_str)
+
         if topojson is None:
             map_var = '_'.join(['gjson', str(self.mark_cnt['geojson'])])
             layer_var = map_var
@@ -585,7 +659,7 @@ class Map(object):
         self.template_vars.setdefault('geo_styles', []).append(style)
         self.template_vars.setdefault('gjson_layers', []).append(layer)
 
-    def _build_map(self, html_templ=None):
+    def _build_map(self, html_templ=None, templ_type='string'):
         '''Build HTML/JS/CSS from Templates given current map type'''
         if html_templ is None:
             map_types = {'base': 'fol_template.html',
@@ -596,7 +670,8 @@ class Map(object):
 
             html_templ = self.env.get_template(type_temp)
         else:
-            html_templ = self.env.from_string(html_templ)
+            if templ_type == 'string':
+                html_templ = self.env.from_string(html_templ)
 
         self.HTML = html_templ.render(self.template_vars)
 
@@ -614,7 +689,7 @@ class Map(object):
             Custom template to render
 
         '''
-
+        self.map_path = path
         self._build_map(template)
 
         with codecs.open(path, 'w', 'utf-8') as f:
@@ -629,3 +704,32 @@ class Map(object):
             for name, plugin in self.plugins.iteritems():
                 with open(name, 'w') as f:
                     f.write(plugin)
+
+    def _repr_html_(self):
+        """Build the HTML representation for IPython."""
+        map_types = {'base': 'ipynb_repr.html',
+                     'geojson': 'ipynb_iframe.html'}
+
+        #Check current map type
+        type_temp = map_types[self.map_type]
+        if self.render_iframe:
+            type_temp = 'ipynb_iframe.html'
+        templ = self.env.get_template(type_temp)
+        self._build_map(html_templ=templ, templ_type='temp')
+        if self.map_type == 'geojson' or self.render_iframe:
+            if not self.map_path:
+                raise ValueError('Use create_map to set the path!')
+            return templ.render(path=self.map_path, width=self.width,
+                                height=self.height)
+        return self.HTML
+
+    def display(self):
+        """Display the visualization inline in the IPython notebook.
+
+        This is deprecated, use the following instead::
+
+            from IPython.display import display
+            display(viz)
+        """
+        from IPython.core.display import display, HTML
+        display(HTML(self._repr_html_()))
